@@ -46,7 +46,7 @@ Mean_val <- HIFI_df[HIFI_df$Image == sprintf("%s.ome.tif - final_image",sampleNa
 
 # add a new column and unige lable for each cell(row) and relocate the column to be after the y column ( columns should be located as the following: “x”, “y”, “label”, and “cell_type” respectively )
 cellPosTypeExpr  <- Mean_val  %>%
-  mutate(unique(label = row_number()))%>%
+  mutate(label = row_number())%>%
   relocate(label, .after = y)
 
 #to avoid loading the main file which is too big and takes time, save the file in rds format
@@ -426,6 +426,7 @@ CM <- correlation_niches_CM(markersCells.niches=CePhNi,Markers=MARKERS,corrMeth=
                             coreIntf2 ,1/100,0.3,nbNiches=NoNi)
 
 ```
+
 ##### Plot heatmaps and see the correlation of biomarkers in related cell types, niches, and the interface of niches
 ```{r,heatmaps, include=FALSE,echo =TRUE }
 
