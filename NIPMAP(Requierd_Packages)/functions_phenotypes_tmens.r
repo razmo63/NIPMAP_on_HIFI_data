@@ -560,7 +560,6 @@ getInterNiches <- function(nIntf,nbNiches){
 #   return(cM.filt)
 # }
 # 
-
 ########-----CORRELATION+ FDR NEW VERSION ------###########
 correlation_niches_CM <- function(markersCells.niches,Markers,corrMeth="spearman",coreIntf,qThresh=1/100,corThresh=0.3,nbNiches){
   rareCells<- markersCells.niches%>%group_by(cell_type)%>%summarise(total=n())%>%filter(total<=3*length(Markers))%>%pull(cell_type)
@@ -629,7 +628,7 @@ correlation_niches_CM <- function(markersCells.niches,Markers,corrMeth="spearman
     pivot_wider(id_cols=id, names_from= niche,values_from=qvalue)%>%
     column_to_rownames(var="id")%>%
     replace(is.na(.),1) # Set q value to 1 (to bel ater filtered out) to NA values, these associations didn't match aforementioned criteria
-  print(head(corQval))
+  #print(head(corQval))
   
   #Recover all possible niches and interfaces with the cell phenotypes
   if(ncol(corQval)!=length(coreIntf)){
@@ -680,7 +679,7 @@ plot_heatmap_CT <- function(CM.mat,nichesIntf,figPath="./figs/cM_byCells3.pdf"){
   Markers<- pull(CM_TMENs_ct ,marker)
   ## Annotations colors = length of cell types
   colorCount = length(cts)#length(CELLTYPES)
-  getPalette = colorRampPalette(RColorBrewer::brewer.pal(10, "Paired"))
+  getPalette = colorRampPalette(RColorBrewer::brewer.pal(12, "Paired")) # change color from "Set1" to "Paired"
   getPalette(colorCount)
   # List with colors for each annotation.
   CTcolors <- list(cell_type = getPalette(colorCount))
@@ -688,8 +687,9 @@ plot_heatmap_CT <- function(CM.mat,nichesIntf,figPath="./figs/cM_byCells3.pdf"){
   rownames(cellTypes) <- rownames(CM_TMENs_ct)
   #rownames(Markers) <-rownames(CM_TMENs_ct)
   figWidth <- nrow(CM.mat) * 30/267
-  pdf(figPath,height=8, width=ifelse(figWidth<6, 6, figWidth+2))
-  pheatmap(t(CM.mat),cluster_cols = hclustCells,cluster_rows = FALSE,annotation_col=cellTypes,annotation_colors= CTcolors,labels_col = Markers)#
+  pdf(figPath,height= 11, width=ifelse(figWidth<10, 10, figWidth+6)) ######## changed . original was : figWidth<6, 6, figWidth+2)
+  pheatmap(t(CM.mat),cluster_cols = hclustCells,cluster_rows = FALSE,annotation_col=cellTypes,annotation_colors= CTcolors,labels_col = Markers) 
+  
   dev.off()
 }
 
@@ -708,7 +708,7 @@ plot_heatmap_markers <- function(CM.mat,nichesIntf,figPath="./figs/cM_byMarkers2
   cellTypes2 <- pull(CM_TMENs_ph,cell_type) #data.frame(cell_type =pull(CM_TMENs_ph ,cell_type))
   
   colorCount = length(unique(pull(CM_TMENs_ph,marker)))
-  getPalette = colorRampPalette(RColorBrewer::brewer.pal(15, "Paired"))
+  getPalette = colorRampPalette(RColorBrewer::brewer.pal(12, "Paired")) # change color from "Set1" to "Paired"
   getPalette(colorCount)
   CTcolors <- list(marker = getPalette(colorCount))
   names(CTcolors$marker) <- unique(pull(CM_TMENs_ph,marker))
@@ -722,7 +722,7 @@ plot_heatmap_markers <- function(CM.mat,nichesIntf,figPath="./figs/cM_byMarkers2
   # 
   cMf_ordered <- cMf.copy%>%as_tibble(rownames=NA)%>%rownames_to_column(var="names")%>%separate(col="names",into=c("marker","cell_type"),sep=";")%>%group_by(marker)%>%arrange(marker)%>%mutate(names=paste0(marker,";",cell_type))%>%column_to_rownames(var="names")%>%dplyr::select(-c(cell_type,marker))
   figWidth <- nrow(CM.mat) * 30/267
-  pdf(figPath,height=8, width=ifelse(figWidth<6, 6, figWidth+2))
+  pdf(figPath,height=11, width=ifelse(figWidth<10, 10, figWidth+6)) ######## changed . original was : figWidth<6, 6, figWidth+2)
   pheatmap(as.matrix(cMf_ordered%>%t),cluster_cols = hclustPhen,cluster_rows = FALSE,annotation_col = Markers2,labels_col = cellTypes2,annotation_colors=CTcolors)
   dev.off()
 }
@@ -753,7 +753,7 @@ get_cell_type_enriched_arch <- function(cellAb.df,archetype,k=1,thresh=0.99){
     group_by(cell_type)%>%
     summarise(meanCT=mean(cell_density),sdCT = sd(cell_density))%>%
     arrange(desc(meanCT))#%>% ## arrange by decreasing order of cell density ==> most abundant cell types of this niche
-
+  
   summaryA2 <- summaryA%>%column_to_rownames(var="cell_type")
   cts <- c()
   for(c in summaryA%>%pull(cell_type)){ #(c in CELLTYPES)
@@ -884,8 +884,9 @@ TableNichesPhenotypes <- function(CM,NichesCT,Niches.names,nichesCA.sorted,pathF
   
   tabCellPhen2 <- tabCellPhen %>%
     mutate(niche = paste(type1,type2,sep=" x "))%>%
-   
+    #full_join(.,archs.CT,by=("region"))%>%
     mutate(niche=str_replace_all(niche," x NA",""))%>%
+    filter(!(cell_type %in% c("DC / Mono", "CD3-T", "Mono / Neu", "Other immune"))) %>%
     group_by(niche)%>%mutate(cells = paste(unique(cell_type),collapse='\n'))%>%
     group_by(niche,cell_type)%>% 
     mutate(cell_phenotype= paste0(paste(marker, collapse = " "),cell_type)) %>%
@@ -893,26 +894,33 @@ TableNichesPhenotypes <- function(CM,NichesCT,Niches.names,nichesCA.sorted,pathF
     group_by(niche)%>%
     mutate(cell_phenotype=paste(unique(cell_phenotype),collapse="\n")) %>%
     distinct(niche, .keep_all = TRUE)%>%
-    arrange(niche)%>%dplyr::select(niche, cells,cell_phenotype)
-  
+    #ungroup()%>%
+    arrange(niche,.by_group=TRUE)%>%
+    dplyr::select(niche, cells,cell_phenotype)#%>%
+  #arrange(niche)
+  #print(tabCellPhen2)
   tabCellPhen3 <- tabCellPhen2%>%
+    group_by(niche)%>%
     mutate(cellPh =ifelse(niche %in% pull(NichesCT,niche),paste(NichesCT[NichesCT$niche==niche ,"cell_type"],collapse="\n"),""))%>%
     rowwise()%>%
     mutate(ct = ifelse(grepl("\n",cellPh,fixed=TRUE)==FALSE,paste(setdiff(as.vector(cellPh),str_split(cells,"\n")[[1]]),collapse="\n"),ifelse(grepl("\n",cells,fixed=TRUE)==FALSE,paste(setdiff(str_split(cellPh,"\n")[[1]], as.vector(cells)),collapse="\n"),paste(setdiff(str_split(cellPh,"\n")[[1]],str_split(cells,"\n")[[1]]),collapse="\n"))))%>%
     mutate(cell_phenotype = paste(cell_phenotype,ct,sep="\n"),.keep="unused")%>%
     dplyr::select(-c(cells, cellPh))%>%#mutate(sign  = "+")
     #distinct(region, .keep_all = TRUE)%>%
+    #ungroup()%>%
+    data.frame()%>%
     arrange(niche)
   
-  ## Display and save table in pdf
-   th1 <- ttheme_default()
-   g1 <- tableGrob(tabCellPhen3,rows=NULL,theme = th1)#(tabCellPhen2%>%mutate(region=str_replace_all(region," x NA","")),rows=NULL,theme = th1)
-   #gpar.corefill = gpar(fill = "white", col = "grey95"))
-  # #grid.newpage()
-  # #grid.draw(g1)
-   ggsave(paste0(pathFigs,"/tabNichePhen.pdf"),g1,width=12,height=12) #width=7,height=10 (w and h was changed to get the whole table)
-   return(tabCellPhen3)
-
+  ### Display and save table in pdf
+  th1 <- ttheme_default()
+  g1 <- tableGrob(tabCellPhen3,rows=NULL,theme = th1)#(tabCellPhen2%>%mutate(region=str_replace_all(region," x NA","")),rows=NULL,theme = th1)
+  #gpar.corefill = gpar(fill = "white", col = "grey95"))
+  #grid.newpage()
+  #grid.draw(g1)
+  ggsave(paste0(pathFigs,"/tabNichePhen.pdf"),g1,width=20,height=20) #width=7,height=10 (w and h was changed to get the whole table) 
+  
+  return(tabCellPhen3)
+  
 }
 
 
