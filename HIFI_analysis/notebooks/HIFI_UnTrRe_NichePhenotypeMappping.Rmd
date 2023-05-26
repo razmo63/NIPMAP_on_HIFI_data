@@ -1,0 +1,420 @@
+---
+title: "NIPMAP on HIFI data"
+output:
+  html_document: default
+  pdf_document: default
+date: "2023-03-28"
+---
+```{r setup,include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+
+library(tidyverse)
+library(RColorBrewer)
+library(rjson)
+library(readxl)
+library(plotly)
+library(grid)
+library(gridExtra)
+dirName <- dirname(rstudioapi::getSourceEditorContext()$path) # get the path
+setwd(dirName)
+
+### required functions (NIPMAP tool)
+source("../../NIPMAP(Requierd_Packages)/functions_phenotypes_tmens.r")
+
+
+
+```
+
+### read the csv files for each group seperatly and save it as an object (untreated, 7DaysRT and Rebound) and combine all groups together as a CSV file.
+
+```{r , Preprocessing ,echo = TRUE}
+
+
+sample_Un = "31801_32Un" # untreated
+sample_Tr = "31803_13Tr" # 7days IR
+sample_Re = "33876_36Re" # relapse
+Un = "Untreated_31801_slide_32"
+Tr = "7DayRT_31803_slide_13"
+Re = "Rebound_33876_slide_36"
+
+ # untreated
+Un_df <- read_rds(sprintf("../data/%s_filter.rds", Un))  
+Un_df <- Un_df%>%
+        mutate(SampleID= sample_Un)%>% # add a column for sampleID
+        relocate(SampleID, .after= Image)
+
+# 7days IR
+Tr_df <- read_rds(sprintf("../data/%s_filter.rds", Tr))
+Tr_df <- Tr_df%>%
+        mutate(SampleID= sample_Tr)%>% #add a column for sampleID
+        relocate(SampleID, .after= Image)
+
+ # relapse
+Re_df <- read_rds(sprintf("../data/%s_filter.rds", Re))
+Re_df <- Re_df%>%
+        mutate(SampleID= sample_Re)%>% #add a column for sampleID
+        relocate(SampleID, .after= Image)
+
+#### All names (columns) in all three groups should have the same format in order to bind them.  
+
+colnames(Re_df) <- gsub("Col.I", "Col I", colnames(Re_df))
+colnames(Re_df) <- gsub("VE.Cad", "VE-Cad", colnames(Re_df))
+colnames(Re_df) <- gsub("Col.IV", "Col IV", colnames(Re_df))
+colnames(Re_df) <- gsub("NF.H", "NF-H", colnames(Re_df))
+colnames(Re_df) <- gsub("Lamin.AC", "Lamin AC", colnames(Re_df))
+colnames(Re_df) <- gsub ("\\..", ": ", colnames(Re_df))
+                   
+UnTrRe_df <-rbind(Un_df,Tr_df,Re_df)
+
+
+# read the metadata which has information about marker used in this experiment
+expresion_marker_region <- read_xlsx("../data/HIFI_RT_Marker_Legend.xlsx")
+
+# match the name of the biomarker from the main CSV file and metadata( .xlsx file), REMOVE DAPI, and select only the mean intensities of the biomarker recommended in the metadata ('MFI Measurement Zone')
+
+MarkerRegion <-  unite(expresion_marker_region, col='marker_region', c('Marker', 'MFI Measurement Zone'), sep = " ")
+MarkerRegion$marker_region <- gsub(" ", ": ", MarkerRegion$marker_region) 
+MarkerRegion$marker_region <- gsub("Nuclei", "Nucleus", MarkerRegion$marker_region)
+MarkerRegion$marker_region <- gsub("Col: IV", "Col IV", MarkerRegion$marker_region)
+MarkerRegion$marker_region <- gsub("Col: I", "Col I", MarkerRegion$marker_region)
+
+
+
+
+UnTrRe_df <- pivot_longer(UnTrRe_df, cols = "DAPI: Nucleus: Mean": "Phalloidin: Cell: Mean", 
+                  names_to = "marker_region", values_to = "Mean_Intensity")
+
+
+cellposmarkRegion <- left_join(UnTrRe_df ,MarkerRegion, by="marker_region") 
+
+# drop the NA value of the "Channel" column, remove the "DAPI" from the markers
+cellposmarkRegion<- cellposmarkRegion %>% 
+  drop_na("Channel") %>%
+  rename( "Marker" ="Full Name") %>%
+  filter(Marker!= "DAPI")  
+
+
+
+
+
+###################### patient_cell_positions.csv ############
+####should read the CSV file which created before for each individual group (the cropped image ) and then combines all group in an object called "CelPos_allgroups"
+ 
+CelPosUn_rectangle <- read.csv(sprintf("../data/patient%s_cell_positions.csv", sample_Un))
+CelPosUn_rectangle$SampleID <- sample_Un
+
+CelPosTr_rectangle <- read.csv(sprintf("../data/patient%s_cell_positions.csv", sample_Tr))
+CelPosTr_rectangle$SampleID <- sample_Tr
+
+CelPosRe_rectangle <- read.csv(sprintf("../data/patient%s_cell_positions.csv", sample_Re))
+CelPosRe_rectangle$SampleID <- sample_Re
+
+CelPos_allgroups <-rbind(CelPosUn_rectangle ,CelPosTr_rectangle,CelPosRe_rectangle)%>%
+  select(-c("cluster"))
+
+
+
+
+```
+
+
+
+
+#####  Data preparation and generation of "cellData.csv", which is required for niche-phenotype mapping. in this step, only the functional biomarker which is provided in metadata in a column named `Use For Classification` was selected.
+
+```{r, generation of "cellData.csv", fig.align='center',echo= TRUE}
+
+
+#Choose the required column from the previously saved data set based on the unique label and filter just the functional biomarker and add a column called SampleID 
+cellData <- cellposmarkRegion %>%
+  select(label, Marker ,SampleID, Mean_Intensity , `Use For Classification`)%>%
+  unique(by=label)%>%
+  filter (`Use For Classification` %in% c("No"))
+
+cellData<- cellData %>% 
+     pivot_wider(names_from = Marker, values_from =Mean_Intensity )%>%
+     select(-c(`Use For Classification`))
+    
+      
+
+# Rename the column named "label" to "cellLabelInImage" (MIPMAP requirement). Change the biomarker's name to a shorter version. remove unnecessary columns and relocate columns to meet MIPMAP requirements
+
+cellData <- left_join(CelPos_allgroups,cellData, by=c("label","SampleID"))%>%
+            rename("cellLabelInImage" ="label", "TNC" = "Tenascin C" , "NF-H"="Neurofilament H",
+                   "CC3"="Cleaved caspace 3","WGA"= "Wheat germ agglutinin 647")%>%
+            select(-c(x,y,cell_type))%>%
+            relocate(SampleID,.before =cellLabelInImage)
+       
+
+# Save the data as CSV format with the exact name provided
+
+write_csv(cellData%>%as_tibble(rownames=NA),"../data/cellData.csv" )
+
+
+```
+
+
+
+
+### load json objects which was saved in "HIFI_UnTrRe_TMENsAnalysis.ipynb" 
+
+
+```{r, load json objects, echo= TRUE}
+
+
+DataId = "UnTrRe"
+Pc <- fromJSON(file= sprintf("../output/pca_sites_%s.json",DataId))  # PCA on sites 
+ArAn <- fromJSON(file= sprintf("../output/ArAn_sites_%s.json" ,DataId)) # Archetype analysis based on sites cell abundance
+CeAb <- fromJSON(file= sprintf ("../output/CeAbSi_%s.json", DataId)) # cell abundance of randomly generated sites
+CeNi<- fromJSON(file= sprintf("../output/cells_niches_%s.json", DataId)) # sites centered on cells and niches weights
+NiCo <-  fromJSON(file= sprintf("../output/niches_color_%s.json", DataId)) #Niches color code 
+ 
+
+```
+
+#####  NICH_PHENOTYPE_ASSOCIATIONS
+
+```{r, requirement parameter, echo = TRUE }
+
+#Define the requirement parameter for downstream analysis 
+
+CELLTYPES <- c ('Astrocyte', 'Fibroblast', 'Neuron', 'Neutrophil', 'OPC-like','T-cell',
+                'TAM', 'Tumor_A','Tumor_B','Vessel','Undefined')
+
+NoNi = 11
+
+
+```
+
+### Cell abundance in sites
+
+```{r, Cell abundance in sites, fig.align='center',echo= TRUE}
+
+# convert the JSON object to data frame with class tbl_df
+SiCeAb <- as_tibble(lapply(CeAb$cellAbSites,unlist))
+SiCeAb <- SiCeAb %>%
+          select(-c(site_id, patient_id, index))  # remove unnecessary columns
+
+
+
+```
+
+
+
+##### NICHE IDENTIFICATION 
+
+```{r, NICHE IDENTIFICATION, fig.align='center', echo= TRUE}
+
+# Define an object containing a sequence of "Ni" (niches)and paste  number 1,.. to the length of "NoNi" to "Ni"  
+niches <- paste0("Ni",as.vector(seq(1,NoNi,1)))
+
+# Extract the color code which is converted rgb to hex color and saved in "HIFI_NIPMAP.ipynb" as a json file.
+NiCo <- as.list(NiCo$Niche_color)
+
+#convert the JSON object to data frame with class tbl_df
+NiCePro <- do.call(cbind,lapply(ArAn$nichesCA,unlist))
+rownames(NiCePro ) <- CELLTYPES
+colnames(NiCePro ) <- niches
+
+# ranspose and pivot the data
+NiCePr  <- NiCePro %>%t%>%
+  as_tibble(rownames = NA)%>%
+  rownames_to_column(var="archetype")%>%
+  pivot_longer(cols=all_of(CELLTYPES),names_to="cell_type",values_to = "cell_density")
+
+# Negative cell densities are changed to zero.
+NiCePr [NiCePr <0] <-0
+
+```
+
+
+
+
+##### NICHE-PHENOTYPE MAPPING 
+
+```{r, NICHE-PHENOTYPE MAPPING, echo = TRUE }
+## Niches weights(proportions) of all cells from all images 
+
+NiInNo <- 2 # number of interface 
+
+MARKERS <-  c("Hif1a", "TNC", "NF-H", "CC3", "Podoplanin", "Laminin", "Periostin", "RedDot2",
+             "CSPG5", "Fibronectin", "Col IV", "WGA", "aTubulin", "Col I", "Phalloidin")
+
+
+CeNi <- as_tibble(lapply(CeNi$cells_niches,unlist))%>%
+  rename_at(vars(matches("[0-9]")),~niches)%>%
+  mutate(cell_id=as.numeric(cell_id))
+
+# base on the number of given interface and number of niches create the interface of the niches(combination) 
+
+Get_NiIn <- function(IntNo,NiNo){
+  NiIn<- combn(niches,IntNo)
+  NiIn <- apply(NiIn,2,function(x) paste0(x,collapse=" X "))
+  return(NiIn )
+}
+
+coreIntf2 <- append(niches,Get_NiIn(NiInNo,NoNi))
+
+```
+
+
+##### Get markers expression and niche weigths of cells
+```{r, markers expression and niche weigths of cells, echo = TRUE }
+
+# df with following columns: cell_type, SampleID, cell_id, Ni1....an & interfaces, marker,value
+CePhNi <- read.csv("../data/cellData.csv",check.names=FALSE,header = TRUE, sep =',')%>%
+ 
+  dplyr::rename(cell_id = cellLabelInImage)%>%
+  left_join(CeNi%>%filter(cell_type!="Undefined"),.,by=c("SampleID","cell_id"))%>%
+  filter(cell_type!="Undefined")%>%
+  filter(!(is.na(Ni1)| is.na(Ni2)| is.na(Ni3) | is.na(Ni4)|  is.na(Ni5) |  is.na(Ni6) |  is.na(Ni7) |  is.na(Ni8) |  is.na(Ni9) |  is.na(Ni10) |  is.na(Ni11)))%>%
+  mutate("Ni1 X Ni2" = Ni1*Ni2)%>%
+  mutate("Ni1 X Ni3" = Ni1*Ni3)%>%
+  mutate("Ni1 X Ni4" = Ni1*Ni4)%>%
+  mutate("Ni1 X Ni5" = Ni1*Ni5)%>%
+  mutate("Ni1 X Ni6" = Ni1*Ni6)%>%
+  mutate("Ni1 X Ni7" = Ni1*Ni7)%>%
+  mutate("Ni1 X Ni8" = Ni1*Ni8)%>%
+  mutate("Ni1 X Ni9" = Ni1*Ni9)%>%
+  mutate("Ni1 X Ni10" = Ni1*Ni10)%>%
+  mutate("Ni1 X Ni11" = Ni1*Ni11)%>%
+  mutate("Ni2 X Ni3" = Ni2*Ni3)%>%
+  mutate("Ni2 X Ni4" = Ni2*Ni4)%>%
+  mutate("Ni2 X Ni5" = Ni2*Ni5)%>%
+  mutate("Ni2 X Ni6" = Ni2*Ni6)%>%
+  mutate("Ni2 X Ni7" = Ni2*Ni7)%>%
+  mutate("Ni2 X Ni8" = Ni2*Ni8)%>%
+  mutate("Ni2 X Ni9" = Ni2*Ni9)%>%
+  mutate("Ni2 X Ni10" = Ni2*Ni10)%>%
+  mutate("Ni2 X Ni11" = Ni2*Ni11)%>%
+  mutate("Ni3 X Ni4" = Ni3*Ni4)%>%
+  mutate("Ni3 X Ni5" = Ni3*Ni5)%>%
+  mutate("Ni3 X Ni6" = Ni3*Ni6)%>%
+  mutate("Ni3 X Ni7" = Ni3*Ni7)%>%
+  mutate("Ni3 X Ni8" = Ni3*Ni8)%>%
+  mutate("Ni3 X Ni9" = Ni3*Ni8)%>%
+  mutate("Ni3 X Ni10" = Ni3*Ni10)%>%
+  mutate("Ni3 X Ni11" = Ni3*Ni11)%>%
+  mutate("Ni4 X Ni5" = Ni4*Ni5)%>%
+  mutate("Ni4 X Ni6" = Ni4*Ni6)%>%
+  mutate("Ni4 X Ni7" = Ni4*Ni7)%>%
+  mutate("Ni4 X Ni8" = Ni4*Ni8)%>% 
+  mutate("Ni4 X Ni9" = Ni4*Ni9)%>%
+  mutate("Ni4 X Ni10" = Ni4*Ni10)%>%
+  mutate("Ni4 X Ni11" = Ni4*Ni11)%>%
+  mutate("Ni5 X Ni6" = Ni5*Ni6)%>%
+  mutate("Ni5 X Ni7" = Ni5*Ni7)%>%
+  mutate("Ni5 X Ni8" = Ni5*Ni8)%>%
+  mutate("Ni5 X Ni9" = Ni5*Ni9)%>%
+  mutate("Ni5 X Ni10" = Ni5*Ni10)%>%
+  mutate("Ni5 X Ni11" = Ni5*Ni11)%>%
+  mutate("Ni6 X Ni7" = Ni6*Ni7)%>%
+  mutate("Ni6 X Ni8" = Ni6*Ni8)%>%
+  mutate("Ni6 X Ni9" = Ni6*Ni9)%>%
+  mutate("Ni6 X Ni10" = Ni6*Ni10)%>%
+  mutate("Ni6 X Ni11" = Ni6*Ni11)%>%
+  mutate("Ni7 X Ni8" = Ni7*Ni8)%>%
+  mutate("Ni7 X Ni9" = Ni7*Ni9)%>%
+  mutate("Ni7 X Ni10" = Ni7*Ni10)%>%
+  mutate("Ni7 X Ni11" = Ni7*Ni11)%>%
+  mutate("Ni8 X Ni9" = Ni8*Ni9)%>%
+  mutate("Ni8 X Ni10" = Ni8*Ni10)%>%
+  mutate("Ni8 X Ni11" = Ni8*Ni11)%>%
+  mutate("Ni9 X Ni10" = Ni9*Ni10)%>%
+  mutate("Ni9 X Ni11" = Ni9*Ni11)%>%
+  mutate("Ni10 X Ni11" = Ni10*Ni11)%>%
+  pivot_longer(cols=all_of(MARKERS),
+               names_to="marker",values_to="value")
+
+CM <- correlation_niches_CM(markersCells.niches=CePhNi,Markers=MARKERS,corrMeth="spearman",
+                            coreIntf2 ,1/100,0.3,nbNiches=NoNi)
+
+```
+
+
+
+##### Plot heatmaps and see the correlation of biomarkers in related cell types, niches, and the interface of niches
+```{r,heatmaps, include=FALSE,echo =TRUE }
+
+plot_heatmap_CT(CM.mat=CM, coreIntf2  ,"../output/fig/CMbyCells2.pdf")
+plot_heatmap_markers(CM.mat=CM,coreIntf2  ,"../output/fig/CMbyMarkers.pdf")
+
+```
+
+
+
+##### TABLE OF NICHE-ASSOCIATED CELL PHENOTYPES 
+```{r, TABLE OF NICHE-ASSOCIATED CELL PHENOTYPES , TRUE}
+#Archetype weights of randomly generated sites 
+ArSi <- as.data.frame(do.call(cbind,lapply(ArAn$alfas,unlist)))
+
+NiNames <- c("Ni1"="Astrocytes","Ni2"="T-cell, TAMs, fibroblasts","Ni3"="T-cell, vessels",
+                 "Ni4"="Tumor, low vascularization",
+                "Ni5"="OPC-like with a few tumor and neurons",
+                "Ni6"="Tumor & astrocyte, high vascularization",
+                 "Ni7"="Neuronal","Ni8"="Vessels", "Ni9"= "TAMs with vessel & astrocytes",
+                "Ni10"= "Neutrophils, neurons","Ni11"="Empty" )
+
+
+
+NiCeAb <- NiCePro %>%t%>%as_tibble(rownames=NA)%>%rownames_to_column(var="archetype")%>%
+    mutate(archetype=str_replace_all(archetype,NiNames))
+
+#Since Ni10 and Ni11 are not replaced by the bug in str_replace_all() correctly, we must change the name
+NiCeAb$archetype <- gsub("Astrocytes0", "Neutrophils, neurons", NiCeAb$archetype) 
+NiCeAb$archetype <- gsub("Astrocytes1", "Empty", NiCeAb$archetype) 
+
+NiCeAb <- NiCeAb %>% column_to_rownames(var="archetype")%>%t()%>%
+  as_tibble(rownames=NA)%>%rownames_to_column(var="cell_type")%>%
+  filter(cell_type!="Undefined")
+
+
+
+###Sort cell types per niche by decreasing cell abundance
+
+NiCeAb.sort <- NiCeAb %>%
+   pivot_longer(cols = as.vector(NiNames),names_to="niche",values_to="cell_density")%>%
+   group_by(niche)%>%arrange(desc(cell_density))
+  
+
+
+
+colnames(ArSi) <- niches
+ArSiCeAb <- cbind(SiCeAb,ArSi)%>%
+  pivot_longer(cols=append(CELLTYPES,"Undefined"),names_to="cell_type",values_to= "cell_density")
+ 
+
+
+### Get cell types enriched in each niche (take top 1% sites closest to niche)
+
+NiCeTy <- get_CT_enriched_all_archs(ArSiCeAb ,NiNames ,thresh=0.99)%>%
+  group_by(niche)%>%
+  mutate(cell_type = paste(unique(cell_type),collapse="\n"))%>%
+  distinct(niche,cell_type)
+
+
+# Since Ni10 and Ni11 are not replaced by the bug in str_replace_all() correctly, we must change the name
+NiCeTy$niche <- gsub("Astrocytes0", "Neutrophils, neurons", NiCeTy$niche)
+NiCeTy$niche <- gsub("Astrocytes1", "Empty", NiCeTy$niche) 
+
+
+## Get table of niches/interfaces-associated cell phenotypes
+
+table <-TableNichesPhenotypes(CM=CM,NichesCT=NiCeTy,Niches.names=NiNames ,
+                               nichesCA.sorted = NiCeAb.sort,pathFigs = "../output/fig")
+
+
+
+#Since Ni10 and Ni11 are not replaced by the bug in str_replace_all() correctly, we must change the name in the table to the desired name and save the table as a pdf.
+
+table$niche <- gsub("Astrocytes0", "Neutrophils, neurons", table$niche)
+table$niche <- gsub("Astrocytes1", "Empty", table$niche)
+
+
+
+pdf("../output/fig/NichePhenotype_table.pdf",width=20,height=20)
+grid.table(table, rows = NULL)
+
+dev.off()
+```
