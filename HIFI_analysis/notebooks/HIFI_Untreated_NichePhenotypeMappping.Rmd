@@ -1,0 +1,552 @@
+---
+title: "NIPMAP on HIFI data_Untreated"
+output: html_document
+date: "2023-02-23"
+---
+
+
+
+```{r setup,include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+
+library(tidyverse)
+library(RColorBrewer)
+library(rjson)
+library(readxl)
+library(plotly)
+library(grid)
+library(gridExtra)
+dirName <- dirname(rstudioapi::getSourceEditorContext()$path) # get the path
+setwd(dirName)
+
+### required functions (NIPMAP tool)
+source("../../NIPMAP(Requierd_Packages)/functions_phenotypes_tmens.r")
+
+# In this project, many images from the data were examined in order to see which tumor section best displayed the variety of cell types and to avoid using the image information in the name of outputs, variable by the information of the image was saved and by using sprintf() the image information was added to the output name
+
+ImageID = "Untreated_31801_slide_32"
+SampleID = "31801_32Un"
+
+```
+
+
+#####  Read the csv data file and filter untreated_slide_32 from the images. Then filter only the Mean intensities of biomarkers. create a column called cell_Id for each uniqe cell and save the new data as .rds file. Don't need to run this chunk everytime. 
+
+```{r, echo = FALSE , eval=FALSE,echo= TRUE}
+#read the csv file and set the "trim_ws = TRUE" to remove the whitespace from fields
+HIFI_df <- read_csv("../data/Untreated_full_Annotated_sorted.csv",trim_ws = TRUE,  col_names = TRUE, col_types = NULL, skip = 0)
+
+# select the column and rename the column of the data to be compatible with the NIPMAP tool and filter only the mean intensities of biomarkers
+Mean_val <- HIFI_df[HIFI_df$Image == sprintf("%s.ome.tif - final_image",ImageID), ] %>%
+  select("Image","Centroid X µm","Centroid Y µm", "Cell_type", "cluster",ends_with("Mean"))%>%
+   rename("x"= "Centroid X µm", "y"= "Centroid Y µm" , "cell_type" = "Cell_type")
+
+# add a new column and unige lable for each cell(row) and relocate the column to be after the y column ( columns should be located as the following: “x”, “y”, “label”, and “cell_type” respectively )
+cellPosTypeExpr  <- Mean_val  %>%
+  mutate(label = row_number())%>%
+  relocate(label, .after = y)
+
+#to avoid loading the main file which is too big and takes time, save the file in rds format
+write_rds(cellPosTypeExpr , file = sprintf("../data/%s_filter.rds", ImageID))
+```
+
+#####  Read the marker_legend data which is the region of the cell from which the marker siglal is recorded. And prepare data based on the information in this file For each marker, choose the cell region recommended in this file. at the end save final data as rds.file
+
+
+```{r , Preprocessing ,echo = TRUE}
+
+# read csv file which is filter based on the selected image
+cellPosTypeExpr  = read_rds(sprintf("../data/%s_filter.rds", ImageID))
+
+# read the metadata which has information about marker used in this experiment
+expresion_marker_region <- read_xlsx("../data/HIFI_RT_Marker_Legend.xlsx")
+
+# match the name of the biomarker from the main CSV file and metadata( .xlsx file), REMOVE DAPI, and select only the mean intensities of the biomarker recommended in the metadata ('MFI Measurement Zone')
+
+MarkerRegion <-  unite(expresion_marker_region, col='marker_region', c('Marker', 'MFI Measurement Zone'), sep = " ")
+MarkerRegion$marker_region <- gsub(" ", ": ", MarkerRegion$marker_region) 
+MarkerRegion$marker_region <- gsub("Nuclei", "Nucleus", MarkerRegion$marker_region)
+MarkerRegion$marker_region <- gsub("Col: IV", "Col IV", MarkerRegion$marker_region)
+MarkerRegion$marker_region <- gsub("Col: I", "Col I", MarkerRegion$marker_region)
+
+
+
+cellPosTypeExpr <- pivot_longer(cellPosTypeExpr , cols = "DAPI: Nucleus: Mean": "Phalloidin: Cell: Mean", 
+                  names_to = "marker_region", values_to = "Mean_Intensity")
+
+
+cellposmarkRegion <- left_join(cellPosTypeExpr ,MarkerRegion, by="marker_region") 
+
+cellposmarkRegion<- cellposmarkRegion %>% 
+  drop_na("Channel") %>%
+  rename( "Marker" ="Full Name") %>%
+  filter(Marker!= "DAPI")
+
+# save the new dataset as a csv file 
+write_csv(cellposmarkRegion%>%as_tibble(rownames=NA),sprintf("../data/%s_cellposmarkRegion.csv",ImageID))
+
+```
+
+#####  create a new dataset including cell_ID, cell position and cell_type. Plot the sample image as a scatter plot with x,y axes, each cell is a dot, color it by cell type
+
+
+```{r , scatter plot of cell type position, fig.align='center', echo = TRUE }
+
+# prepare the input data for NIPMAP tools according to NIPMAP specifications ("HIFI_untreated_TMENsAnalysis.ipynb").
+
+cellPosType <- cellposmarkRegion %>%
+  select(x, y ,label, cell_type, cluster )%>%
+  unique(by=label)%>%
+  mutate(cell_type = recode(cell_type , 'TAM_A' = 'TAM', 'TAM_B' = 'TAM'))
+
+# Rename the "NA" value in the cell type column to "Undefined" because the "NA" value was not a character and the cells were not considered in the analysis.
+
+cellPosType[is.na(cellPosType$cell_type)==TRUE,c("cell_type")] <- "Undefined" 
+
+# to see all the palettes of ColorBrewer and pick one
+#display.brewer.all()
+mypalette <-brewer.pal(12,"Paired")
+
+
+#customized colors to produce a better visualization
+cellcol <- c("#f5879a","#FFA500", "#B2DF8A" ,"#33A02C" ,"#FFFF99","#E31A1C","#A6CEE3" ,"#000000","#6A3D9A" ) 
+
+# Using cell type as a reference, color-code the whole tissue and save the plot in .png format. by using scale_color_manua() and setting the value to the object (cellcol), have a better visualization
+
+ggplot(cellPosType ) + geom_point(aes(x,y, color= cell_type)) + 
+  theme(axis.text.x=element_text(angle=45,hjust=1, size = 15, face = "bold"),
+        axis.title = element_text(size = 18,face = "bold"),
+        axis.text.y=element_text(hjust=1, size = 15, face = "bold"),
+        legend.text = element_text(size = 15, face = "bold"),
+        legend.title = element_text(size = 18, face = "bold"),
+        legend.key.size = unit(0.5,"cm"))+
+        ggtitle(ImageID)+
+        theme(plot.title = element_text(hjust = 0.5, size = 18, face = "bold"))+
+        scale_color_manual(values = cellcol)
+
+
+png(sprintf("../output/fig/%s_CellPosType.png",ImageID), width=900, height=600)
+ggplot(cellPosType ) + geom_point(aes(x,y, color= cell_type)) + 
+  theme(axis.text.x=element_text(angle=45,hjust=1, size = 15, face = "bold"),
+        axis.text.y=element_text(hjust=1, size = 15, face = "bold"),
+        axis.title = element_text(size = 18,face = "bold"),
+        legend.text = element_text(size = 15, face = "bold"),
+        legend.title = element_text(size = 18, face = "bold"),
+        legend.key.size = unit(0.5,"cm"))+
+        ggtitle(ImageID)+
+        theme(plot.title = element_text(hjust = 0.5, size = 18, face = "bold") )+
+        scale_color_manual(values = cellcol)
+  
+dev.off()     
+      
+ 
+```
+
+
+#####  Find coordinates of a big rectangle that is 100% within the brain+tumor tissue, due to the fact that NIPMAP only supports rectangular datasets. Then write the data as a CSV file as input to "HIFI_untreated_TMENsAnalysis.ipynb" . The data is now prepared for NIPMAP tools, and the chunks in "HIFI NIPMAP.ipynb" need to be executed. The remaining analysis would then be performed here, beginning with "NICH PHENOTYPE ASSOCIATIONS."
+
+
+```{r,croped rectangular, fig.align='center',echo= TRUE}
+
+#For image with this information :#ImageID = "Untreated_31801_slide_32" and #SampleID = "31801"
+cellPosType <- filter(cellPosType ,cellPosType$x>1200 & cellPosType$x<4500 & cellPosType$y>1000 &cellPosType$y<3800 )
+
+#For image with this information :ImageID = "Untreated_31794_slide_16" and SampleID = "31794"
+#cellPosType <- filter(cellPosType ,cellPosType$x>1000 & cellPosType$x<5500 & cellPosType$y>1000 &cellPosType$y<3800 )
+
+
+#For new coordinate point of origin (0, 0) 
+xMin <- min (pull(cellPosType,x))
+yMin <- min (pull(cellPosType,y))
+
+
+# Because the location of the x and y axes starts from 1200 and 1000 when the cell is filtered to produce the rectangle, we must relocate each cell's coordinates to zero. cell types TAM_A and TAM_B renamed to TAM
+
+cellPosType <- cellPosType %>%
+               mutate(x=x-xMin) %>%
+               mutate(y=y-yMin)
+              
+               
+
+# Get the size of the image, this information will be used as an input parameter in "HIFI_untreated_TMENsAnalysis.ipynb"
+Xmax <- max (pull(cellPosType,x ))
+Ymax <- max (pull(cellPosType,y ))
+
+
+# Plot the chosen rectangular datasets
+ggplot(cellPosType) +
+  geom_point(aes(x,y, color= cell_type)) + 
+  theme(axis.text.x=element_text(angle=45,hjust=1, size = 15, face = "bold"),
+        axis.text.y=element_text(hjust=1, size = 15, face = "bold"),
+        axis.title = element_text(size = 18,face = "bold"),
+        legend.text = element_text(size = 15, face = "bold"),
+        legend.title = element_text(size = 18, face = "bold"),
+        legend.key.size = unit(0.5,"cm"))+
+        ggtitle(ImageID)+
+        theme(plot.title = element_text(hjust = 0.5, size = 18, face = "bold") )+
+        scale_color_manual(values = cellcol)
+
+png( sprintf( "../output/fig/%s_CellwithinRectangle.png",ImageID),width=900, height=600)
+ggplot(cellPosType) + geom_point(aes(x,y, color= cell_type)) + 
+   theme(axis.text.x=element_text(angle=45,hjust=1, size = 15, face = "bold"),
+        axis.text.y=element_text(hjust=1, size = 15, face = "bold"),
+        axis.title = element_text(size = 18,face = "bold"),
+        legend.text = element_text(size = 15, face = "bold"),
+        legend.title = element_text(size = 18, face = "bold"),
+        legend.key.size = unit(0.5,"cm"))+
+        ggtitle(ImageID)+
+        theme(plot.title = element_text(hjust = 0.5, size = 18, face = "bold") )+
+        scale_color_manual(values = cellcol)
+  
+dev.off()
+
+# Save the final data set as a CSV file with the exact name provided because the NIMPAP tool accepts only this format. 
+
+write_csv(cellPosType%>%as_tibble(rownames=NA),sprintf("../data/patient%s_cell_positions.csv",SampleID ))
+
+```
+
+
+
+
+#####  data preparation and generation of "cellData.csv", which is required for niche-phenotype mapping. in this step, only the functional biomarker which is provided in metadata in a column named `Use For Classification` was selected.
+
+```{r, generation of "cellData.csv", fig.align='center',echo= TRUE}
+
+
+#Choose the required column from the previously saved data set based on the unique label and filter just the functional biomarker and add a column called SampleID 
+cellData <- cellposmarkRegion %>%
+  select(label, Marker , Mean_Intensity , `Use For Classification`)%>%
+  unique(by=label)%>%
+  filter (`Use For Classification` %in% c("No"))
+
+cellData<- cellData %>% 
+     pivot_wider(names_from = Marker, values_from =Mean_Intensity )%>%
+     mutate(SampleID = SampleID)%>%
+     select(-c(`Use For Classification`))
+    
+      
+
+# Rename the column named "label" to "cellLabelInImage" (MIPMAP requirement). Change the biomarker's name to a shorter version. remove unnecessary columns and relocate columns to meet MIPMAP requirements
+
+cellData <- left_join(cellPosType,cellData, by="label" )%>%
+            rename("cellLabelInImage" ="label", "TNC" = "Tenascin C" , "NF-H"="Neurofilament H",
+                   "CC3"="Cleaved caspace 3","WGA"= "Wheat germ agglutinin 647")%>%
+            select(-c(x,y,cell_type))%>%
+            relocate(SampleID,.before =cellLabelInImage)%>%
+            relocate(cluster, .after = Phalloidin)
+
+# Save the data as CSV format with the exact name provided
+
+write_csv(cellData%>%as_tibble(rownames=NA),"../data/cellData.csv" )
+
+head(cellData)
+
+# To see how the cell type contirbute in diffrent cluste
+
+#  ggplot(cellPosType)+ geom_point(aes(cell_type, cluster, color = cell_type))+
+#       theme(axis.text.x=element_text(angle=45,hjust=1, size = 10, face = "bold"),
+#          axis.text.y=element_text(hjust=1, size = 10, face = "bold"),
+#           legend.text = element_text(size = 10, face = "bold"),
+#          legend.title = element_text(size = 13, face = "bold"))+
+#           scale_color_manual(values = cellcol)
+# 
+# # to Check the frequency of each cell type contributing to each cluster
+#  clutFreq <- table(cellPosType$cell_type, cellPosType$cluster)
+
+
+```
+
+### NICH_PHENOTYPE_ASSOCIATIONS
+
+
+```{r, requirement parameter, echo = TRUE }
+
+#Define the requirement parameter for downstream analysis 
+CELLTYPES <- c ('Astrocyte', 'Fibroblast', 'Neuron', 'Neutrophil', 'T-cell', 'TAM', 'Tumor_A','Vessel','Undefined')
+NoNi = 7
+
+
+```
+
+### load json objects which was saved in "HIFI_untreated_TMENsAnalysis.ipynb" 
+
+```{r, load json objects, echo= TRUE}
+
+Pc <- fromJSON(file= sprintf("../output/pca_sites_%s.json",SampleID))  # PCA on sites 
+ArAn <- fromJSON(file= sprintf("../output/ArAn_sites_%s.json" , SampleID)) # Archetype analysis based on sites cell abundance
+CeAb <- fromJSON(file= sprintf ("../output/CeAbSi_%s.json", SampleID)) # cell abundance of randomly generated sites
+CeNi<- fromJSON(file= sprintf("../output/cells_niches_%s.json", SampleID)) # sites centered on cells and niches weights
+NiCo <-  fromJSON(file= sprintf("../output/niches_color_%s.json", SampleID)) #Niches color code 
+
+```
+
+
+
+## Cell abundance in sites
+
+```{r, Cell abundance in sites, fig.align='center',echo= TRUE}
+
+# convert the JSON object to data frame with class tbl_df
+SiCeAb <- as_tibble(lapply(CeAb$cellAbSites,unlist))
+SiCeAb <- SiCeAb %>%
+          select(-c(site_id, patient_id, index))  # remove unnecessArAny columns
+
+
+## Archetypes coordinates in reduced PC space
+Ar_3D <- do.call(cbind,lapply(ArAn$archs_coord,unlist))
+
+
+# dependent on the variety of cells used in the experiment, set "nrow"
+pca3D <- matrix(unlist(Pc$PcSi),nrow=9)[1:3,]
+
+PcRa<- Pc$expl_var_ratio[1:3]*100
+
+#  label the x, y, and z axis with "expl_var_ratio" value of each PCs
+
+x <- list(title = paste('pc1 (', round(PcRa[1],1),'%)', sep = ''),backgroundcolor= "#d6d2d2",
+           showbackground=TRUE, gridcolor="#4d4747", zerolinecolor="#4d4747") 
+y <- list (title =  paste('pc2 (', round(PcRa[2],1),'%)', sep = ''),backgroundcolor= "#d6d2d2",
+           showbackground=TRUE, gridcolor="#4d4747", zerolinecolor="#4d4747") 
+z <-  list(title = paste('pc3 (', round(PcRa[3],1),'%)', sep = ''),backgroundcolor= "#d6d2d2",
+           showbackground=TRUE, gridcolor="#4d4747", zerolinecolor="#4d4747") 
+
+#Plot the first 3 PCA
+pca_plot <- plot_ly(x=pca3D[1,],
+                    y=pca3D[2,],
+                    z=pca3D[3,],
+                    type="scatter3d")%>% 
+                    layout(scene = list(xaxis=x,yaxis=y,zaxis=z))
+                            
+ pca_plot
+
+# save plot as html 
+htmlwidgets::saveWidget( pca_plot,"../output/fig/PCA_plot_%.html" ) 
+
+ 
+ 
+```
+
+
+######--- NICHE IDENTIFICATION 
+
+
+```{r, NICHE IDENTIFICATION, fig.align='center', echo= TRUE}
+# Define an object containing a sequence of "Ni" (niches)and paste  number 1,.. to the length of "NoNi" to "Ni"  
+niches <- paste0("Ni",as.vector(seq(1,NoNi,1)))
+
+# Extract the color code which is converted rgb to hex color and saved in "HIFI_untreated_TMENsAnalysis.ipynb" as a json file.
+NiCo <- as.list(NiCo$Niche_color)
+
+#convert the JSON object to data frame with class tbl_df
+NiCePro <- do.call(cbind,lapply(ArAn$nichesCA,unlist))
+rownames(NiCePro ) <- CELLTYPES
+colnames(NiCePro ) <- niches
+
+# ranspose and pivot the data
+NiCePr  <- NiCePro %>%t%>%
+  as_tibble(rownames = NA)%>%
+  rownames_to_column(var="archetype")%>%
+  pivot_longer(cols=all_of(CELLTYPES),names_to="cell_type",values_to = "cell_density")
+
+# Negative cell densities are changed to zero.
+NiCePr [NiCePr <0] <-0
+
+# Bar plot of cell composition of each niche
+barplot1 <- ggplot(data =NiCePr , aes(x = cell_type, y = cell_density ,fill = archetype)) +
+  geom_bar(stat = "identity",position = position_dodge(),width = 0.6) +
+  theme(axis.text.x = element_text(angle = 90, vjust = .2))+
+  scale_fill_manual(values = NiCo )
+
+barplot1
+
+ggsave("../output/fig/barplotNiches.pdf",barplot1,height=3,width=4)
+```
+
+#### NICHE-PHENOTYPE MAPPING 
+
+
+```{r, NICHE-PHENOTYPE MAPPING, echo = TRUE }
+
+## Niches weights(proportions) of all cells from all images 
+
+NiInNo <- 2 # number of interface 
+
+MARKERS <-  c("Hif1a", "TNC", "NF-H", "CC3", "Podoplanin", "Laminin", "Periostin", "RedDot2",
+             "CSPG5", "Fibronectin", "Col IV", "WGA", "aTubulin", "Col I", "Phalloidin")
+
+
+CeNi <- as_tibble(lapply(CeNi$cells_niches,unlist))%>%
+  rename_at(vars(matches("[0-9]")),~niches)%>%
+  mutate(cell_id=as.numeric(cell_id))
+
+# base on the number of given interface and number of niches create the interface of the niches(combination) 
+
+Get_NiIn <- function(IntNo,NiNo){
+  NiIn<- combn(niches,IntNo)
+  NiIn <- apply(NiIn,2,function(x) paste0(x,collapse=" X "))
+  return(NiIn )
+}
+
+coreIntf2 <- append(niches,Get_NiIn(NiInNo,NoNi))
+```
+
+##### Get markers expression and niche weigths of cells
+
+```{r, markers expression and niche weigths of cells, echo = TRUE }
+
+# df with following columns: cell_type, SampleID, cell_id, Ni1....an & interfaces, marker,value
+CePhNi <- read.csv("../data/cellData.csv",check.names=FALSE,header = TRUE, sep =',')%>%
+ 
+  dplyr::rename(cell_id = cellLabelInImage)%>%
+  left_join(CeNi%>%filter(cell_type!="Undefined"),.,by=c("SampleID","cell_id"))%>%
+  filter(cell_type!="Undefined")%>%
+  filter(!(is.na(Ni1)| is.na(Ni2)| is.na(Ni3) | is.na(Ni4)|  is.na(Ni5) |  is.na(Ni6) |  is.na(Ni7)))%>%
+  mutate("Ni1 X Ni2" = Ni1*Ni2)%>%
+  mutate("Ni1 X Ni3" = Ni1*Ni3)%>%
+  mutate("Ni1 X Ni4" = Ni1*Ni4)%>%
+  mutate("Ni1 X Ni5" = Ni1*Ni5)%>%
+  mutate("Ni1 X Ni6" = Ni1*Ni6)%>%
+  mutate("Ni1 X Ni7" = Ni1*Ni7)%>%
+  mutate("Ni2 X Ni3" = Ni2*Ni3)%>%
+  mutate("Ni2 X Ni4" = Ni2*Ni4)%>%
+  mutate("Ni2 X Ni5" = Ni2*Ni5)%>%
+  mutate("Ni2 X Ni6" = Ni2*Ni6)%>%
+  mutate("Ni2 X Ni7" = Ni2*Ni7)%>%
+  mutate("Ni3 X Ni4" = Ni3*Ni4)%>%
+  mutate("Ni3 X Ni5" = Ni3*Ni5)%>%
+  mutate("Ni3 X Ni6" = Ni3*Ni6)%>%
+  mutate("Ni3 X Ni7" = Ni3*Ni7)%>%
+  mutate("Ni4 X Ni5" = Ni4*Ni5)%>%
+  mutate("Ni4 X Ni6" = Ni4*Ni6)%>%
+  mutate("Ni4 X Ni7" = Ni4*Ni7)%>%
+  mutate("Ni5 X Ni6" = Ni5*Ni6)%>%
+  mutate("Ni5 X Ni7" = Ni5*Ni7)%>%
+  mutate("Ni6 X Ni7" = Ni6*Ni7)%>%
+
+  pivot_longer(cols=all_of(MARKERS),
+               names_to="marker",values_to="value")
+
+CM <- correlation_niches_CM(markersCells.niches=CePhNi,Markers=MARKERS,corrMeth="spearman",
+                            coreIntf2 ,1/100,0.3,nbNiches=NoNi)
+```
+
+##### Plot heatmaps and see the correlation of biomarkers in related cell types, niches, and the interface of niches
+
+```{r,heatmaps, include=FALSE,echo =TRUE }
+
+
+plot_heatmap_CT(CM.mat=CM, coreIntf2  ,"../output/fig/CMbyCells2.pdf")
+plot_heatmap_markers(CM.mat=CM,coreIntf2  ,"../output/fig/CMbyMarkers.pdf")
+```
+
+###TABLE OF NICHE-ASSOCIATED CELL PHENOTYPES 
+
+```{r, TABLE OF NICHE-ASSOCIATED CELL PHENOTYPES , TRUE}
+
+#Archetype weights of randomly generated sites over TNBC patients images
+ArSi <- as.data.frame(do.call(cbind,lapply(ArAn$alfas,unlist)))
+
+NiNames <- c("Ni1"="pure astro","Ni2"="Astro./Vessel/TAM","Ni3"="low vasc.tumor w/astro",
+                 "Ni4"="low vasc.tumor", "Ni5"="healthy brain colonized by tumor cells",
+                 "Ni6"="hi vasc. tumor", "Ni7"="Empty")
+
+NiCeAb <- NiCePro %>%t%>%as_tibble(rownames=NA)%>%rownames_to_column(var="archetype")%>%
+  mutate(archetype=str_replace_all(archetype,NiNames ))%>%
+  column_to_rownames(var="archetype")%>%t()%>%
+  as_tibble(rownames=NA)%>%rownames_to_column(var="cell_type")%>%
+  filter(cell_type!="Undefined")
+
+
+
+###Sort cell types per niche by decreasing cell abundance
+
+NiCeAb.sort <- NiCeAb%>%
+   pivot_longer(cols = as.vector(NiNames),names_to="niche",values_to="cell_density")%>%
+   group_by(niche)%>%arrange(desc(cell_density))%>%
+   filter(cell_type!="Undefined")
+
+
+
+colnames(ArSi) <- niches
+ArSiCeAb <- cbind(SiCeAb,ArSi)%>%
+  pivot_longer(cols=append(CELLTYPES,"Undefined"),names_to="cell_type",values_to= "cell_density")%>%
+  filter(cell_type!="Undefined")
+
+
+### Get cell types enriched in each niche (take top 1% sites closest to niche)
+
+NiCeTy <- get_CT_enriched_all_archs(ArSiCeAb ,NiNames ,thresh=0.99)%>%
+  group_by(niche)%>%
+  mutate(cell_type = paste(unique(cell_type),collapse="\n"))%>%
+  distinct(niche,cell_type)
+
+## Get table of niches/interfaces-associated cell phenotypes
+
+table <-TableNichesPhenotypes(CM=CM,NichesCT=NiCeTy,Niches.names=NiNames ,
+                               nichesCA.sorted = NiCeAb.sort,pathFigs = "../output/fig")
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
